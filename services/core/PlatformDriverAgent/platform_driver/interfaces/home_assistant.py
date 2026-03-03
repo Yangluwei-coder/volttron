@@ -199,9 +199,7 @@ class Interface(BasicRevert, BaseInterface):
             return value
 
     def _set_point(self, point_name, value):
-        """
-        Issue 3: Implement type validation and conversion based on the register's defined type. This ensures that the value being set is compatible with the expected data type of the Home Assistant entity, preventing errors and ensuring data integrity.
-        """
+        
         register = self.get_register_by_name(point_name)
         if register.read_only:
             raise IOError("Trying to write to a point configured read only: " + point_name)
