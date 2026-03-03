@@ -23,7 +23,6 @@
 # }}}
 
 
-from abc import ABC, abstractmethod
 import random
 from math import pi
 import json
@@ -43,15 +42,7 @@ type_mapping = {"string": str,
                 "bool": bool,
                 "boolean": bool}
 
-class HomeAssistantDomainHandler(ABC):
-    @abstractmethod
-    def validate(self, entity_point, value):
-        pass
 
-    @abstractmethod
-    def build_operation(self, entity_id, entity_point, value):
-        pass
-    
 class HomeAssistantRegister(BaseRegister):
     def __init__(self, read_only, pointName, units, reg_type, attributes, entity_id, entity_point, default_value=None,
                  description=''):
@@ -62,78 +53,6 @@ class HomeAssistantRegister(BaseRegister):
         self.value = None
         self.entity_point = entity_point
 
-class LightHandler(HomeAssistantDomainHandler):
-    def validate(self, entity_point, value):
-        if entity_point == "state":
-            if not (isinstance(value, int) and value in [0, 1]):
-                raise ValueError("State value should be an integer value of 1 or 0")
-        elif entity_point == "brightness":
-            if not (isinstance(value, int) and 0 <= value <= 255):
-                raise ValueError("Brightness value should be an integer between 0 and 255")
-
-    def build_operation(self, entity_id, entity_point, value):
-        self.validate(entity_point, value)
-        service_name = ""
-        payload = {"entity_id": entity_id}
-
-        if entity_point == "state":
-            service_name = "turn_on" if value == 1 else "turn_off"
-        elif entity_point == "brightness":
-            service_name = "turn_on"
-            payload["brightness"] = value
-        
-        return {
-            "service_domain": "light",
-            "service_name": service_name,
-            "payload": payload,
-            "description": f"set {entity_id} {entity_point} to {value}"
-        }
-
-class ClimateHandler(HomeAssistantDomainHandler):
-    def __init__(self, units):
-        self.units = units
-
-    def validate(self, entity_point, value):
-        if entity_point == "state":
-            if value not in [0, 2, 3, 4]:
-                raise ValueError("Climate state should be an integer value of 0, 2, 3, or 4")
-
-    def build_operation(self, entity_id, entity_point, value):
-        self.validate(entity_point, value)
-        service_name = ""
-        payload = {"entity_id": entity_id}
-
-        if entity_point == "state":
-            service_name = "set_hvac_mode"
-            mode_map = {0: "off", 2: "heat", 3: "cool", 4: "auto"}
-            payload["hvac_mode"] = mode_map[value]
-        elif entity_point == "temperature":
-            service_name = "set_temperature"
-            if self.units == "C":
-                value = round((value - 32) * 5/9, 1)
-            payload["temperature"] = value
-
-        return {
-            "service_domain": "climate",
-            "service_name": service_name,
-            "payload": payload,
-            "description": f"set {entity_id} {entity_point} to {value}"
-        }
-
-class InputBooleanHandler(HomeAssistantDomainHandler):
-    def validate(self, entity_point, value):
-        if not (isinstance(value, int) and value in [0, 1]):
-            raise ValueError("InputBoolean state must be 0 or 1")
-
-    def build_operation(self, entity_id, entity_point, value):
-        self.validate(entity_point, value)
-        service_name = "turn_on" if value == 1 else "turn_off"
-        return {
-            "service_domain": "input_boolean",
-            "service_name": service_name,
-            "payload": {"entity_id": entity_id},
-            "description": f"set {entity_id} to {service_name}"
-        }
 
 def _post_method(url, headers, data, operation_description):
     err = None
@@ -160,7 +79,6 @@ class Interface(BasicRevert, BaseInterface):
         self.access_token = None
         self.port = None
         self.units = None
-        self.handler_registry = {}     # Dictionary to hold point names and their corresponding handlers for set_point operations. 
 
     def configure(self, config_dict, registry_config_str):
         self.ip_address = config_dict.get("ip_address", None)
@@ -180,13 +98,6 @@ class Interface(BasicRevert, BaseInterface):
 
         self.parse_config(registry_config_str)
 
-        # Initialize the handler registry with appropriate handlers for different entity types.
-        self.handler_registry = {
-            "light": LightHandler(),
-            "climate": ClimateHandler(self.units),
-            "input_boolean": InputBooleanHandler()
-        }
-
     def get_point(self, point_name):
         register = self.get_register_by_name(point_name)
 
@@ -199,46 +110,80 @@ class Interface(BasicRevert, BaseInterface):
             return value
 
     def _set_point(self, point_name, value):
-        
         register = self.get_register_by_name(point_name)
         if register.read_only:
-            raise IOError("Trying to write to a point configured read only: " + point_name)
-        
-        # Type validation and conversion
-        register.value = register.reg_type(value)
-        
-        # get Domain (e.g., 'light.kitchen' -> 'light')
-        domain = register.entity_id.split(".")[0]
-        
-        # Get the appropriate handler based on the domain. If no handler is found, log an error and raise an exception.
-        handler = self.handler_registry.get(domain)
-        if not handler:
-            error_msg = f"Unsupported domain: {domain}. Currently supported: {list(self.handler_registry.keys())}"
+            raise IOError(
+                "Trying to write to a point configured read only: " + point_name)
+        register.value = register.reg_type(value)  # setting the value
+        entity_point = register.entity_point
+        # Changing lights values in home assistant based off of register value.
+        if "light." in register.entity_id:
+            if entity_point == "state":
+                if isinstance(register.value, int) and register.value in [0, 1]:
+                    if register.value == 1:
+                        self.turn_on_lights(register.entity_id)
+                    elif register.value == 0:
+                        self.turn_off_lights(register.entity_id)
+                else:
+                    error_msg = f"State value for {register.entity_id} should be an integer value of 1 or 0"
+                    _log.info(error_msg)
+                    raise ValueError(error_msg)
+
+            elif entity_point == "brightness":
+                if isinstance(register.value, int) and 0 <= register.value <= 255:  # Make sure its int and within range
+                    self.change_brightness(register.entity_id, register.value)
+                else:
+                    error_msg = "Brightness value should be an integer between 0 and 255"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                error_msg = f"Unexpected point_name {point_name} for register {register.entity_id}"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+
+        elif "input_boolean." in register.entity_id:
+            if entity_point == "state":
+                if isinstance(register.value, int) and register.value in [0, 1]:
+                    if register.value == 1:
+                        self.set_input_boolean(register.entity_id, "on")
+                    elif register.value == 0:
+                        self.set_input_boolean(register.entity_id, "off")
+                else:
+                    error_msg = f"State value for {register.entity_id} should be an integer value of 1 or 0"
+                    _log.info(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                _log.info(f"Currently, input_booleans only support state")
+
+        # Changing thermostat values.
+        elif "climate." in register.entity_id:
+            if entity_point == "state":
+                if isinstance(register.value, int) and register.value in [0, 2, 3, 4]:
+                    if register.value == 0:
+                        self.change_thermostat_mode(entity_id=register.entity_id, mode="off")
+                    elif register.value == 2:
+                        self.change_thermostat_mode(entity_id=register.entity_id, mode="heat")
+                    elif register.value == 3:
+                        self.change_thermostat_mode(entity_id=register.entity_id, mode="cool")
+                    elif register.value == 4:
+                        self.change_thermostat_mode(entity_id=register.entity_id, mode="auto")
+                else:
+                    error_msg = f"Climate state should be an integer value of 0, 2, 3, or 4"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
+            elif entity_point == "temperature":
+                self.set_thermostat_temperature(entity_id=register.entity_id, temperature=register.value)
+
+            else:
+                error_msg = f"Currently set_point is supported only for thermostats state and temperature {register.entity_id}"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+        else:
+            error_msg = f"Unsupported entity_id: {register.entity_id}. " \
+                        f"Currently set_point is supported only for thermostats and lights"
             _log.error(error_msg)
             raise ValueError(error_msg)
-
-        # Use the handler to validate the value and build the operation details (service domain, service name, payload).
-        operation = handler.build_operation(
-            register.entity_id, 
-            register.entity_point, 
-            register.value
-        )
-
-        # Execute the operation by making the appropriate API call to Home Assistant.
-        self.execute_service(operation)
-        
         return register.value
-    
-    def execute_service(self, operation):
-        """
-        Executes a Home Assistant service call based on the provided operation details.
-        """
-        url = f"http://{self.ip_address}:{self.port}/api/services/{operation['service_domain']}/{operation['service_name']}"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        _post_method(url, headers, operation['payload'], operation['description'])
 
     def get_entity_data(self, point_name):
         headers = {
@@ -358,3 +303,105 @@ class Interface(BasicRevert, BaseInterface):
                 self.set_default(self.point_name, register.value)
 
             self.insert_register(register)
+
+    def turn_off_lights(self, entity_id):
+        url = f"http://{self.ip_address}:{self.port}/api/services/light/turn_off"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "entity_id": entity_id,
+        }
+        _post_method(url, headers, payload, f"turn off {entity_id}")
+
+    def turn_on_lights(self, entity_id):
+        url = f"http://{self.ip_address}:{self.port}/api/services/light/turn_on"
+        headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json",
+        }
+
+        payload = {
+            "entity_id": f"{entity_id}"
+        }
+        _post_method(url, headers, payload, f"turn on {entity_id}")
+
+    def change_thermostat_mode(self, entity_id, mode):
+        # Check if enttiy_id startswith climate.
+        if not entity_id.startswith("climate."):
+            _log.error(f"{entity_id} is not a valid thermostat entity ID.")
+            return
+        # Build header
+        url = f"http://{self.ip_address}:{self.port}/api/services/climate/set_hvac_mode"
+        headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "content-type": "application/json",
+        }
+        # Build data
+        data = {
+            "entity_id": entity_id,
+            "hvac_mode": mode,
+        }
+        # Post data
+        _post_method(url, headers, data, f"change mode of {entity_id} to {mode}")
+
+    def set_thermostat_temperature(self, entity_id, temperature):
+        # Check if the provided entity_id starts with "climate."
+        if not entity_id.startswith("climate."):
+            _log.error(f"{entity_id} is not a valid thermostat entity ID.")
+            return
+
+        url = f"http://{self.ip_address}:{self.port}/api/services/climate/set_temperature"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "content-type": "application/json",
+        }
+
+        if self.units == "C":
+            converted_temp = round((temperature - 32) * 5/9, 1)
+            _log.info(f"Converted temperature {converted_temp}")
+            data = {
+                "entity_id": entity_id,
+                "temperature": converted_temp,
+            }
+        else:
+            data = {
+                "entity_id": entity_id,
+                "temperature": temperature,
+            }
+        _post_method(url, headers, data, f"set temperature of {entity_id} to {temperature}")
+
+    def change_brightness(self, entity_id, value):
+        url = f"http://{self.ip_address}:{self.port}/api/services/light/turn_on"
+        headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json",
+        }
+        # ranges from 0 - 255
+        payload = {
+            "entity_id": f"{entity_id}",
+            "brightness": value,
+        }
+
+        _post_method(url, headers, payload, f"set brightness of {entity_id} to {value}")
+
+    def set_input_boolean(self, entity_id, state):
+        service = 'turn_on' if state == 'on' else 'turn_off'
+        url = f"http://{self.ip_address}:{self.port}/api/services/input_boolean/{service}"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "entity_id": entity_id
+        }
+
+        response = requests.post(url, headers=headers, json=payload)
+
+        # Optionally check for a successful response
+        if response.status_code == 200:
+            print(f"Successfully set {entity_id} to {state}")
+        else:
+            print(f"Failed to set {entity_id} to {state}: {response.text}")
