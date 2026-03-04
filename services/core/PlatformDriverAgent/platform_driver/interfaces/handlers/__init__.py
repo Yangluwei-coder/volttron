@@ -1,4 +1,5 @@
 from .base import HomeAssistantDomainHandler
+from .FanHandler import FanHandler  # noqa: F401
 
 def get_handler_registry(config=None):
     """

@@ -54,6 +54,8 @@ pytestmark = pytest.mark.skipif(
 )
 HOMEASSISTANT_DEVICE_TOPIC = "devices/home_assistant"
 
+# TODO(#41): Add live HA integration test for fan canary write path.
+# Validate set_point on fan state/percentage and confirm operation/log evidence end-to-end
 
 # Get the point which will should be off
 def test_get_point(volttron_instance, config_store):

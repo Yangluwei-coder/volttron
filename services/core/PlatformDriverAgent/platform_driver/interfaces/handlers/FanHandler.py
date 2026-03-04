@@ -18,6 +18,7 @@ class FanHandler(HomeAssistantDomainHandler):
     def set_interface(self, interface):
         self.interface = interface
 
+    # TODO(issue-40): Deprecate this method after migrating all handlers to build_operation.
     def _call_ha_service(self, service, service_data):
         """Call Home Assistant API service"""
         url = f"http://{self.interface.ip_address}:{self.interface.port}" \
@@ -68,28 +69,26 @@ class FanHandler(HomeAssistantDomainHandler):
 
     def build_operation(self, entity_id, entity_point, value):
         """
-        Build and execute the operation on Home Assistant.
+        Validate fan write input and return normalized operation descriptor.
         """
-        # Validate first
         self.validate(entity_point, value)
 
         if entity_point == "state":
-            # 0 = off, 1 = on
-            if value == 1:
-                self._call_ha_service(
-                    "fan.turn_on",
-                    {"entity_id": entity_id}
-                )
-            else:
-                self._call_ha_service(
-                    "fan.turn_off",
-                    {"entity_id": entity_id}
-                )
+            service_name = "turn_on" if value == 1 else "turn_off"
+            return {
+                "service_domain": "fan",
+                "service_name": service_name,
+                "payload": {"entity_id": entity_id},
+                "description": f"set {entity_id} state to {value}",
+            }
 
-        elif entity_point == "percentage":
-            self._call_ha_service(
-                "fan.set_percentage",
-                {"entity_id": entity_id, "percentage": value}
-            )
+        if entity_point == "percentage":
+            return {
+                "service_domain": "fan",
+                "service_name": "set_percentage",
+                "payload": {"entity_id": entity_id, "percentage": value},
+                "description": f"set {entity_id} percentage to {value}",
+            }
 
-        return value
+        # Defensive fallback; validate should already catch unsupported points.
+        raise ValueError(f"Unsupported fan entity_point: {entity_point}")

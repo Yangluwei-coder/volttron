@@ -28,6 +28,7 @@ from math import pi
 import json
 import sys
 from platform_driver.interfaces import BaseInterface, BaseRegister, BasicRevert
+from platform_driver.interfaces.handlers import get_handler_registry
 from volttron.platform.agent import utils
 from volttron.platform.vip.agent import Agent
 import logging
@@ -79,6 +80,8 @@ class Interface(BasicRevert, BaseInterface):
         self.access_token = None
         self.port = None
         self.units = None
+        # Initialize domain-to-handler registry for write dispatch.
+        self.handler_registry = get_handler_registry()
 
     def configure(self, config_dict, registry_config_str):
         self.ip_address = config_dict.get("ip_address", None)
@@ -116,6 +119,33 @@ class Interface(BasicRevert, BaseInterface):
                 "Trying to write to a point configured read only: " + point_name)
         register.value = register.reg_type(value)  # setting the value
         entity_point = register.entity_point
+
+        # Get domain from entity_id.
+        domain = register.entity_id.split(".", 1)[0] if "." in register.entity_id else register.entity_id
+        
+        # TODO(issue-40): Generalize handler dispatch for all writable domains
+        # after legacy handlers (light/climate/input_boolean) are migrated.
+
+        # Canary rollout: route only fan writes through handler-based flow.
+        if domain == "fan":
+            fan_handler = self.handler_registry.get("fan")
+            if fan_handler is None:
+                error_msg = (
+                    f"Missing '{domain}' handler in handler_registry for entity_id "
+                    f"'{register.entity_id}' during canary dispatch."
+                )
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+            
+            # Handlers need interface context for HA connection details.
+            if hasattr(fan_handler, "set_interface"):
+                fan_handler.set_interface(self)
+
+            # Delegate fan validation + service mapping/execution to handler.
+            operation = fan_handler.build_operation(register.entity_id, entity_point, register.value)   
+            self._execute_service(operation)
+            return register.value
+
         # Changing lights values in home assistant based off of register value.
         if "light." in register.entity_id:
             if entity_point == "state":
@@ -200,6 +230,23 @@ class Interface(BasicRevert, BaseInterface):
                         f"response: {response.text}"
             _log.error(error_msg)
             raise Exception(error_msg)
+    
+    def _execute_service(self, operation):
+        """
+        Execute normalized HA service operation descriptor.
+        Expected keys: service_domain, service_name, payload, description
+        """
+        # Compose unified Home Assistant API service URL.
+        url = (
+            f"http://{self.ip_address}:{self.port}/api/services/"
+            f"{operation['service_domain']}/{operation['service_name']}"
+        )
+        # Build unified headers for all handler-dispatched writes.
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        _post_method(url, headers, operation["payload"], operation["description"])
 
     def _scrape_all(self):
         result = {}
