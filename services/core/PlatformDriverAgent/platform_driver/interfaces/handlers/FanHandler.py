@@ -14,6 +14,7 @@ class FanHandler(HomeAssistantDomainHandler):
     def __init__(self, config=None):
         super().__init__(config)
         self.interface = None
+        self.supported_points = ["state", "percentage"]
 
     def set_interface(self, interface):
         self.interface = interface
