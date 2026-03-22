@@ -1,5 +1,8 @@
 from .base import HomeAssistantDomainHandler
 from .FanHandler import FanHandler  # noqa: F401
+from .LightHandler import LightHandler
+from .ClimateHandler import ClimateHandler
+from .InputBooleanHandler import InputBooleanHandler
 
 def get_handler_registry(config=None):
     """
