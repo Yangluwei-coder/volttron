@@ -7,6 +7,7 @@ class LightHandler(HomeAssistantDomainHandler):
     def __init__(self, config=None):
         super().__init__(config)
         self.interface = None
+        self.supported_points = ["state", "brightness"]
 
     def set_interface(self, interface):
         self.interface = interface
