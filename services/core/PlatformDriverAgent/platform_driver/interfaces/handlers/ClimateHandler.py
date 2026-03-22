@@ -4,12 +4,12 @@ from .base import HomeAssistantDomainHandler
 _log = logging.getLogger(__name__)
 
 class ClimateHandler(HomeAssistantDomainHandler):
-    # 映射逻辑保持与你原代码一致
     MODE_MAP = {0: "off", 2: "heat", 3: "cool", 4: "auto"}
 
     def __init__(self, config=None):
         super().__init__(config)
         self.interface = None
+        self.supported_points = ["state", "temperature"]
 
     def set_interface(self, interface):
         self.interface = interface
