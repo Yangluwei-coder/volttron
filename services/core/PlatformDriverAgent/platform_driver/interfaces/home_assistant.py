@@ -87,8 +87,11 @@ class Interface(BasicRevert, BaseInterface):
         handler = self.handler_registry.get(domain)
         
         if not handler:
-            _log.error(f"No handler registered for domain: {domain}")
-            raise ValueError(f"Unsupported domain: {domain}")
+            supported_domains = set(get_handler_registry().keys())
+            if domain in supported_domains:
+                raise ValueError(f"Missing '{domain}' handler in registry.")
+            else:
+                raise ValueError(f"Unsupported entity_id domain: {domain}.")
 
         if hasattr(handler, "set_interface"):
             handler.set_interface(self)

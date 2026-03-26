@@ -19,29 +19,6 @@ class FanHandler(HomeAssistantDomainHandler):
     def set_interface(self, interface):
         self.interface = interface
 
-    # TODO(issue-40): Deprecate this method after migrating all handlers to build_operation.
-    def _call_ha_service(self, service, service_data):
-        """Call Home Assistant API service"""
-        url = f"http://{self.interface.ip_address}:{self.interface.port}" \
-              f"/api/services/{service}"
-        headers = {
-            "Authorization": f"Bearer {self.interface.access_token}",
-            "Content-Type": "application/json",
-        }
-
-        try:
-            response = requests.post(url, headers=headers, json=service_data)
-            if response.status_code == 200:
-                _log.info(f"Success: {service} with {service_data}")
-            else:
-                error_msg = f"Failed to {service}. Status: " \
-                            f"{response.status_code}, Response: " \
-                            f"{response.text}"
-                raise Exception(error_msg)
-        except requests.RequestException as e:
-            error_msg = f"Error calling {service}: {e}"
-            raise Exception(error_msg)
-
     def validate(self, entity_point, value):
         """
         Validate the value to be set on the entity point.       

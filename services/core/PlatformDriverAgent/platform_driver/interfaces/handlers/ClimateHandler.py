@@ -21,6 +21,10 @@ class ClimateHandler(HomeAssistantDomainHandler):
         elif entity_point == "temperature":
             if not isinstance(value, (int, float)):
                 raise ValueError(f"Temperature must be numeric, got: {value}")
+            if not (45 <= value <= 95):
+                raise ValueError(f"Temperature must be between 45°F and 95°F, got: {value}")
+        else:
+            raise ValueError(f"Unsupported climate point: {entity_point}")
         return True
 
     def build_operation(self, entity_id, entity_point, value):
