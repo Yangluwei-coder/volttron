@@ -136,7 +136,12 @@ class Interface(BasicRevert, BaseInterface):
         entity_data = self.get_entity_data(register.entity_id)
         
         if register.entity_point == "state":
-            return entity_data.get("state")
+            raw_state = entity_data.get("state")
+            domain = register.entity_id.split(".", 1)[0]
+            handler = self.handler_registry.get(domain)
+            if handler:
+                return handler.normalize_read_state(register.entity_point, raw_state)
+            return raw_state
         return entity_data.get("attributes", {}).get(register.entity_point, 0)
 
     def get_entity_data(self, entity_id):
@@ -171,12 +176,13 @@ class Interface(BasicRevert, BaseInterface):
 
     def _scrape_all(self):
         result = {}
-        for register in self.registers:
-            try:
-                val = self.get_point(register.point_name)
-                result[register.point_name] = val
-            except Exception as e:
-                _log.warning(f"Could not scrape {register.point_name}: {e}")
+        for registers in self.registers.values():
+            for register in registers:
+                try:
+                    val = self.get_point(register.point_name)
+                    result[register.point_name] = val
+                except Exception as e:
+                    _log.warning(f"Could not scrape {register.point_name}: {e}")
         return result
 
     

@@ -1,5 +1,5 @@
 import logging
-from .base import HomeAssistantDomainHandler
+from .base import HomeAssistantDomainHandler, ha_on_off_state_to_volttron
 
 _log = logging.getLogger(__name__)
 
@@ -28,3 +28,8 @@ class InputBooleanHandler(HomeAssistantDomainHandler):
             "payload": {"entity_id": entity_id},
             "description": f"{service} input_boolean {entity_id}"
         }
+
+    def normalize_read_state(self, entity_point, raw_state):
+        if entity_point == "state":
+            return ha_on_off_state_to_volttron(raw_state)
+        return super().normalize_read_state(entity_point, raw_state)

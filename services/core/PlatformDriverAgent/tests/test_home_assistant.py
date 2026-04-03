@@ -54,6 +54,11 @@ pytestmark = pytest.mark.skipif(
     reason=skip_msg
 )
 HOMEASSISTANT_DEVICE_TOPIC = "devices/home_assistant"
+
+# TODO: this is a separate Platform Driver device used only for fan tests.
+# One HA connection could use a single devices/home_assistant topic with a combined registry; 
+# the split is for current test/fixture layout (e.g. fan_config_store teardown)
+# and may be consolidated when adding light/climate or refactor fixtures.
 HOMEASSISTANT_FAN_TOPIC = "devices/home_assistant_fan"
 
 
@@ -89,12 +94,12 @@ def test_set_point(volttron_instance, config_store):
 # ---------------------------------------------------------------------------
 
 def test_fan_get_point(volttron_instance, fan_config_store):
-    """Fan get_point returns expected state value ('on' or 'off')."""
+    """Fan get_point returns expected state value (1 or 0)."""
     agent = volttron_instance.dynamic_agent
     result = agent.vip.rpc.call(
         PLATFORM_DRIVER, 'get_point', 'home_assistant_fan', 'fan_state'
     ).get(timeout=20)
-    assert result in ("on", "off"), f"Unexpected fan state: {result}"
+    assert result in (1, 0), f"Unexpected fan state: {result}"
 
 
 def test_fan_set_point_on(volttron_instance, fan_config_store):
@@ -105,7 +110,7 @@ def test_fan_set_point_on(volttron_instance, fan_config_store):
     result = agent.vip.rpc.call(
         PLATFORM_DRIVER, 'get_point', 'home_assistant_fan', 'fan_state'
     ).get(timeout=20)
-    assert result == "on", f"Expected fan to be 'on', got: {result}"
+    assert result == 1, f"Expected fan to be 'on', got: {result}"
 
 
 def test_fan_set_point_off(volttron_instance, fan_config_store):
@@ -119,7 +124,7 @@ def test_fan_set_point_off(volttron_instance, fan_config_store):
     result = agent.vip.rpc.call(
         PLATFORM_DRIVER, 'get_point', 'home_assistant_fan', 'fan_state'
     ).get(timeout=20)
-    assert result == "off", f"Expected fan to be 'off', got: {result}"
+    assert result == 0, f"Expected fan to be 'off', got: {result}"
 
 
 def test_fan_set_point_percentage(volttron_instance, fan_config_store):

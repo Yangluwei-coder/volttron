@@ -1,7 +1,7 @@
 import logging
 import requests
 
-from .base import HomeAssistantDomainHandler
+from .base import HomeAssistantDomainHandler, ha_on_off_state_to_volttron
 
 _log = logging.getLogger(__name__)
 
@@ -70,3 +70,8 @@ class FanHandler(HomeAssistantDomainHandler):
 
         # Defensive fallback; validate should already catch unsupported points.
         raise ValueError(f"Unsupported fan entity_point: {entity_point}")
+
+    def normalize_read_state(self, entity_point, raw_state):
+        if entity_point == "state":
+            return ha_on_off_state_to_volttron(raw_state)
+        return super().normalize_read_state(entity_point, raw_state)
