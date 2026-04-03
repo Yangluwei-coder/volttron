@@ -1,5 +1,9 @@
 import pytest
+import requests
+import logging
+from unittest.mock import MagicMock, patch
 
+from platform_driver.interfaces import DriverInterfaceError
 from platform_driver.interfaces.home_assistant import Interface
 from platform_driver.interfaces.handlers.FanHandler import FanHandler
 from platform_driver.interfaces.handlers.LightHandler import LightHandler
@@ -542,3 +546,284 @@ def test_set_point_input_boolean_unsupported_point_raises_error():
     interface.handler_registry = {"input_boolean": InputBooleanHandler()}
     with pytest.raises(ValueError, match="InputBoolean only supports 'state' point"):
         interface._set_point("vacation_mode_brightness", "high")
+
+
+# ---------- Interface: HTTP, reads, scrape, configure (mocked, no live HA) ----------
+
+
+def _interface_with_ha_credentials():
+    interface = Interface()
+    interface.ip_address = "127.0.0.1"
+    interface.port = "8123"
+    interface.access_token = "test-token"
+    return interface
+
+
+@pytest.mark.driver_unit
+# Verifies _execute_service raises when Home Assistant returns a non-200 status.
+def test_execute_service_non_200_raises_exception():
+    interface = _interface_with_ha_credentials()
+    operation = {
+        "service_domain": "fan",
+        "service_name": "turn_on",
+        "payload": {"entity_id": "fan.x"},
+        "description": "test op",
+    }
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    mock_resp.text = "Internal error"
+
+    with patch(
+        "platform_driver.interfaces.home_assistant.requests.post",
+        return_value=mock_resp,
+    ):
+        with pytest.raises(Exception, match="Home Assistant service call failed"):
+            interface._execute_service(operation)
+
+@pytest.mark.driver_unit
+# Verifies _execute_service propagates requests.RequestException after logging.
+def test_execute_service_request_exception_propagates():
+    interface = _interface_with_ha_credentials()
+    operation = {
+        "service_domain": "light",
+        "service_name": "turn_on",
+        "payload": {"entity_id": "light.x"},
+        "description": "test op",
+    }
+    boom = requests.ConnectionError("network down")
+
+    with patch(
+        "platform_driver.interfaces.home_assistant.requests.post",
+        side_effect=boom,
+    ):
+        with pytest.raises(requests.ConnectionError, match="network down"):
+            interface._execute_service(operation)
+
+@pytest.mark.driver_unit
+# Verifies _set_point rejects writes to read-only registers with IOError.
+def test_set_point_read_only_register_raises_ioerror():
+    interface = Interface()
+    register = _DummyRegister(
+        entity_id="sensor.temperature",
+        entity_point="state",
+        read_only=True,
+    )
+    interface.get_register_by_name = lambda _: register
+
+    with pytest.raises(IOError, match="read-only"):
+        interface._set_point("temperature", 1)
+
+@pytest.mark.driver_unit
+# Verifies get_point for state uses the domain handler normalize_read_state.
+def test_get_point_state_uses_handler_normalize_read_state():
+    interface = _interface_with_ha_credentials()
+    interface.handler_registry = {"light": LightHandler()}
+    register = _DummyRegister(entity_id="light.kitchen", entity_point="state")
+    interface.get_register_by_name = lambda _: register
+    interface.get_entity_data = lambda entity_id: {"state": "on", "attributes": {}}
+
+    assert interface.get_point("kitchen_state") == 1
+
+@pytest.mark.driver_unit
+# Verifies get_point for state returns raw HA state when no handler is registered.
+def test_get_point_state_without_handler_returns_raw_state():
+    interface = _interface_with_ha_credentials()
+    interface.handler_registry = {}
+    register = _DummyRegister(entity_id="sensor.door", entity_point="state")
+    interface.get_register_by_name = lambda _: register
+    interface.get_entity_data = lambda entity_id: {"state": "42", "attributes": {}}
+
+    assert interface.get_point("door") == "42"
+
+@pytest.mark.driver_unit
+# Verifies get_point reads non-state entity_point from attributes.
+def test_get_point_non_state_returns_attribute_value():
+    interface = _interface_with_ha_credentials()
+    register = _DummyRegister(entity_id="climate.lr", entity_point="temperature")
+    interface.get_register_by_name = lambda _: register
+    interface.get_entity_data = lambda entity_id: {
+        "state": "heat",
+        "attributes": {"temperature": 72.5},
+    }
+
+    assert interface.get_point("lr_temp") == 72.5
+
+@pytest.mark.driver_unit
+# Verifies get_point returns default 0 when the requested attribute is missing.
+def test_get_point_missing_attribute_returns_default_zero():
+    interface = _interface_with_ha_credentials()
+    register = _DummyRegister(entity_id="climate.lr", entity_point="humidity")
+    interface.get_register_by_name = lambda _: register
+    interface.get_entity_data = lambda entity_id: {
+        "state": "heat",
+        "attributes": {},
+    }
+
+    assert interface.get_point("lr_humidity") == 0
+
+@pytest.mark.driver_unit
+# Verifies get_entity_data returns JSON on HTTP 200.
+def test_get_entity_data_200_returns_json():
+    interface = _interface_with_ha_credentials()
+    payload = {"entity_id": "light.kitchen", "state": "on", "attributes": {}}
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = payload
+
+    with patch(
+        "platform_driver.interfaces.home_assistant.requests.get",
+        return_value=mock_resp,
+    ):
+        assert interface.get_entity_data("light.kitchen") == payload
+
+@pytest.mark.driver_unit
+# Verifies get_entity_data raises when the HTTP status is not 200.
+def test_get_entity_data_non_200_raises():
+    interface = _interface_with_ha_credentials()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 404
+
+    with patch(
+        "platform_driver.interfaces.home_assistant.requests.get",
+        return_value=mock_resp,
+    ):
+        with pytest.raises(Exception, match="Failed to fetch light.missing"):
+            interface.get_entity_data("light.missing")
+
+@pytest.mark.driver_unit
+# Verifies _scrape_all returns successful points and logs a warning when one register fails.
+def test_scrape_all_collects_points_and_warns_on_per_register_failure(caplog):
+    interface = _interface_with_ha_credentials()
+    interface.parse_config(
+        [
+            {
+                "Entity ID": "light.a",
+                "Entity Point": "state",
+                "Volttron Point Name": "good",
+                "Writable": "true",
+                "Type": "int",
+            },
+            {
+                "Entity ID": "light.b",
+                "Entity Point": "state",
+                "Volttron Point Name": "bad",
+                "Writable": "true",
+                "Type": "int",
+            },
+        ]
+    )
+
+    def _get_point(name):
+        if name == "bad":
+            raise RuntimeError("simulated scrape failure")
+        return 111
+
+    interface.get_point = _get_point
+
+    with caplog.at_level(logging.WARNING, logger="platform_driver.interfaces.home_assistant"):
+        out = interface._scrape_all()
+
+    assert out == {"good": 111}
+    assert "Could not scrape bad" in caplog.text
+
+
+@pytest.mark.driver_unit
+# Verifies configure raises ValueError when ip_address is missing.
+def test_configure_missing_ip_address_raises_value_error():
+    interface = Interface()
+    with pytest.raises(ValueError, match="ip_address, access_token, and port"):
+        interface.configure({"access_token": "t", "port": "8123"}, [])
+
+
+@pytest.mark.driver_unit
+# Verifies configure raises ValueError when access_token is missing.
+def test_configure_missing_access_token_raises_value_error():
+    interface = Interface()
+    with pytest.raises(ValueError, match="ip_address, access_token, and port"):
+        interface.configure({"ip_address": "127.0.0.1", "port": "8123"}, [])
+
+
+@pytest.mark.driver_unit
+# Verifies configure raises ValueError when port is missing.
+def test_configure_missing_port_raises_value_error():
+    interface = Interface()
+    with pytest.raises(ValueError, match="ip_address, access_token, and port"):
+        interface.configure({"ip_address": "127.0.0.1", "access_token": "t"}, [])
+
+
+@pytest.mark.driver_unit
+# Verifies configure raises ValueError when ip_address is empty.
+def test_configure_empty_ip_address_raises_value_error():
+    interface = Interface()
+    with pytest.raises(ValueError, match="ip_address, access_token, and port"):
+        interface.configure({"ip_address": "", "access_token": "t", "port": "8123"}, [])
+
+
+@pytest.mark.driver_unit
+# Verifies configure sets connection fields and passes registry into parse_config.
+def test_configure_success_invokes_parse_config():
+    interface = Interface()
+    seen = []
+
+    def _capture(registry):
+        seen.append(registry)
+
+    interface.parse_config = _capture
+    interface.configure(
+        {"ip_address": "127.0.0.1", "access_token": "tok", "port": "8123"},
+        [],
+    )
+    assert interface.ip_address == "127.0.0.1"
+    assert interface.access_token == "tok"
+    assert interface.port == "8123"
+    assert seen == [[]]
+
+
+@pytest.mark.driver_unit
+# Verifies parse_config registers a valid registry row by Volttron point name.
+def test_parse_config_valid_rows_create_registers():
+    interface = Interface()
+    registry = [
+        {
+            "Entity ID": "light.kitchen",
+            "Entity Point": "state",
+            "Volttron Point Name": "kitchen_light",
+            "Writable": "true",
+            "Type": "int",
+            "Units": "On/Off",
+        },
+    ]
+    interface.parse_config(registry)
+
+    reg = interface.get_register_by_name("kitchen_light")
+    assert reg.entity_id == "light.kitchen"
+    assert reg.entity_point == "state"
+    assert reg.read_only is False
+
+@pytest.mark.driver_unit
+# Verifies parse_config skips rows without Entity ID and still registers valid rows.
+def test_parse_config_skips_rows_missing_entity_id():
+    interface = Interface()
+    registry = [
+        {
+            "Entity Point": "state",
+            "Volttron Point Name": "orphan",
+            "Writable": "true",
+            "Type": "string",
+        },
+        {
+            "Entity ID": "switch.valid",
+            "Entity Point": "state",
+            "Volttron Point Name": "valid_point",
+            "Writable": "false",
+            "Type": "int",
+        },
+    ]
+    interface.parse_config(registry)
+
+    with pytest.raises(DriverInterfaceError, match="orphan"):
+        interface.get_register_by_name("orphan")
+
+    valid = interface.get_register_by_name("valid_point")
+    assert valid.entity_id == "switch.valid"
+    assert valid.read_only is True
