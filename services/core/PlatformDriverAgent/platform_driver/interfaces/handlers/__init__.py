@@ -1,11 +1,8 @@
 from .base import HomeAssistantDomainHandler
-<<<<<<< HEAD
-=======
 from .FanHandler import FanHandler  # noqa: F401
 from .LightHandler import LightHandler
 from .ClimateHandler import ClimateHandler
 from .InputBooleanHandler import InputBooleanHandler
->>>>>>> 72e366971b55ac8eb3c9a8014386421bf5223c14
 
 def get_handler_registry(config=None):
     """
@@ -20,8 +17,4 @@ def get_handler_registry(config=None):
             domain_key = 'input_boolean'
         
         registry[domain_key] = cls(config)
-<<<<<<< HEAD
     return registry
-=======
-    return registry
->>>>>>> 72e366971b55ac8eb3c9a8014386421bf5223c14
