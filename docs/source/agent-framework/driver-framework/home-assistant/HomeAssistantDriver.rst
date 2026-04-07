@@ -1,11 +1,11 @@
 .. _HomeAssistant-Driver:
-This is Luwei Yang's Lab 6 modification- Testing Sphinx Build.
+
 Home Assistant Driver
 =====================
 
 The Home Assistant driver enables VOLTTRON to read any data point from any Home Assistant controlled device.
-Currently control(write access) is supported only for lights(state and brightness) and thermostats(state and temperature).
-
+Write (control) access is supported for the following domains: light(state and brightness), climate(state and temperature), fan(state and percentage), and input_boolean(state).
+ 
 The following diagram shows interaction between platform driver agent and home assistant driver.
 
 .. mermaid::
@@ -158,16 +158,87 @@ For thermostats, the state is converted into numbers as follows: "0: Off, 2: hea
        }
    ]
 
+Example Fan Registry
+********************
+ 
+For fans, the state is represented as 0 (off) or 1 (on), and percentage controls the fan speed from 0 to 100.
+ 
+.. code-block:: json
+ 
+   [
+       {
+           "Entity ID": "fan.example",
+           "Entity Point": "state",
+           "Volttron Point Name": "fan_state",
+           "Units": "On / Off",
+           "Units Details": "0: off, 1: on",
+           "Writable": true,
+           "Starting Value": 0,
+           "Type": "int",
+           "Notes": "Fan on/off state"
+       },
+       {
+           "Entity ID": "fan.example",
+           "Entity Point": "percentage",
+           "Volttron Point Name": "fan_percentage",
+           "Units": "Percent",
+           "Units Details": "Fan speed percentage, 0 - 100",
+           "Writable": true,
+           "Starting Value": 0,
+           "Type": "int",
+           "Notes": "Fan speed percentage control, 0 - 100"
+       }
+   ]
 
 
-Transfer the registers files and the config files into the VOLTTRON config store using the commands below:
+Example Input Boolean Registry
+*******************************
+
+For input_boolean helpers, the state is represented as 0 (off) or 1 (on).
+ 
+.. code-block:: json
+ 
+   [
+       {
+           "Entity ID": "input_boolean.example",
+           "Entity Point": "state",
+           "Volttron Point Name": "input_boolean_state",
+           "Units": "On / Off",
+           "Units Details": "0: off, 1: on",
+           "Writable": true,
+           "Starting Value": 0,
+           "Type": "int",
+           "Notes": "Input boolean toggle"
+       }
+   ]
+
+
+Before starting the platform driver, store the registry files and config files 
+for each device into the VOLTTRON config store.
+
+Each device requires two files:
+
+- **Registry file** (``.json``) – defines the data points of the device (e.g., brightness, state).
+- **Config file** (``.config``) – defines how the driver connects to the device.
+
+Run the following commands to store the files for each device:
 
 .. code-block:: bash
 
    vctl config store platform.driver light.example.json HomeAssistant_Driver/light.example.json
    vctl config store platform.driver devices/BUILDING/ROOM/light.example HomeAssistant_Driver/light.example.config
 
-Upon completion, initiate the platform driver. Utilize the listener agent to verify the driver output:
+   vctl config store platform.driver thermostat.example.json HomeAssistant_Driver/thermostat.example.json
+   vctl config store platform.driver devices/BUILDING/ROOM/thermostat.example HomeAssistant_Driver/thermostat.example.config
+
+   vctl config store platform.driver fan.example.json HomeAssistant_Driver/fan.example.json
+   vctl config store platform.driver devices/BUILDING/ROOM/fan.example HomeAssistant_Driver/fan.example.config
+
+   vctl config store platform.driver input_boolean.example.json HomeAssistant_Driver/input_boolean.example.json
+   vctl config store platform.driver devices/BUILDING/ROOM/input_boolean.example HomeAssistant_Driver/input_boolean.example.config
+
+Once completed, start the platform driver and use the listener agent to verify 
+the output. A successful result looks like the following:
 
 .. code-block:: bash
 
@@ -178,9 +249,22 @@ Upon completion, initiate the platform driver. Utilize the listener agent to ver
 
 Running Tests
 +++++++++++++++++++++++
-To run tests on the VOLTTRON home assistant driver you need to create a helper in your home assistant instance. This can be done by going to **Settings > Devices & services > Helpers > Create Helper > Toggle**. Name this new toggle **volttrontest**. After that run the pytest from the root of your VOLTTRON file.
-
+ 
+Two test suites cover the Home Assistant driver:
+ 
+**Unit tests** (no live Home Assistant instance required) — these test handler-registry dispatch, ``build_operation``
+output, and state normalization for all supported domains using mocked responses:
+ 
 .. code-block:: bash
-    pytest volttron/services/core/PlatformDriverAgent/tests/test_home_assistant.py
-
-If everything works, you will see 6 passed tests.
+ 
+   pytest volttron/services/core/PlatformDriverAgent/tests/test_home_assistant_handler_dispatch.py
+ 
+**Integration tests** (require a live Home Assistant instance) — before running, create a helper in your Home
+Assistant instance by going to **Settings > Devices & services > Helpers > Create Helper > Toggle** and naming it
+**volttrontest**. Then run:
+ 
+.. code-block:: bash
+ 
+   pytest volttron/services/core/PlatformDriverAgent/tests/test_home_assistant.py
+ 
+If everything works, all tests in both suites will pass.
