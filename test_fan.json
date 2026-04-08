@@ -1,0 +1,26 @@
+[
+    {
+        "Entity ID": "fan.test_fan",
+        "Entity Point": "state",
+        "Volttron Point Name": "fan_state",
+        "Units": "On / Off",
+        "Units Details": "0: off, 1: on",
+        "Writable": true,
+        "Starting Value": 0,
+        "Type": "int",
+        "Notes": "风扇开关"
+    },
+    {
+        "Entity ID": "fan.test_fan",
+        "Entity Point": "percentage",
+        "Volttron Point Name": "fan_percentage",
+        "Units": "%",
+        "Units Details": "0-100",
+        "Writable": true,
+        "Starting Value": 0,
+        "Type": "int",
+        "Notes": "风扇速度百分比"
+    }
+]
+
+

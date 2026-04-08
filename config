@@ -1,0 +1,4 @@
+[volttron]
+instance-name = volttron1
+message-bus = zmq
+vip-address = tcp://127.0.0.1:22916

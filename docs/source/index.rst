@@ -149,15 +149,7 @@ at our bi-weekly office-hours and on Slack. To be invited to office-hours or sla
    :maxdepth: 1
 
    tutorials/quick-start
-
-   
-.. toctree::
-   :caption: Tutorials
-   :hidden:
-   :titlesonly:
-   :maxdepth: 1
-
-   tutorials/quick-start   
+   tutorials/home-assistant-write-tutorial
 
 
 Indices and tables

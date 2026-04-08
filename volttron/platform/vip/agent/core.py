@@ -36,7 +36,7 @@ import uuid
 import warnings
 import weakref
 from contextlib import contextmanager
-from errno import ENOENT
+from errno import ENOENT, EINVAL
 
 import gevent.event
 import grequests
@@ -844,7 +844,7 @@ class ZMQCore(Core):
         except AttributeError:
             pass
         except ZMQError as exc:
-            if exc.errno != ENOENT:
+            if exc.errno not in (ENOENT, EINVAL):
                 _log.exception('disconnect error')
         finally:
             self.socket = None

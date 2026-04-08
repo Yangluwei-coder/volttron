@@ -24,6 +24,8 @@
 
 import zmq
 import logging
+from errno import EINVAL
+from zmq.green import ZMQError
 
 from .green import Socket as GreenSocket
 from .rmq_connection import BaseConnection
@@ -84,7 +86,11 @@ class ZMQConnection(BaseConnection):
         return self.socket.recv_vip_object(flags, copy, track)
 
     def disconnect(self):
-        self.socket.disconnect(self._url)
+        try:
+            self.socket.disconnect(self._url)
+        except ZMQError as exc:
+            if exc.errno != EINVAL:
+                raise
 
     def close_connection(self, linger=5):
         """This method closes ZeroMQ socket"""

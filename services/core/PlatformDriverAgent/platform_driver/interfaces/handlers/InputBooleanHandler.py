@@ -21,12 +21,12 @@ class InputBooleanHandler(HomeAssistantDomainHandler):
 
     def build_operation(self, entity_id, entity_point, value):
         self.validate(entity_point, value)
-        service = "turn_on" if value == 1 else "turn_off"
+        # input_boolean only has toggle service, not turn_on/turn_off.
         return {
             "service_domain": "input_boolean",
-            "service_name": service,
+            "service_name": "toggle",
             "payload": {"entity_id": entity_id},
-            "description": f"{service} input_boolean {entity_id}"
+            "description": f"toggle input_boolean {entity_id}"
         }
 
     def normalize_read_state(self, entity_point, raw_state):
