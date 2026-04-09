@@ -4,107 +4,116 @@
 Home Assistant Device Write Tutorial
 ========================================
 
-This tutorial will guide you step-by-step through controlling devices in Home Assistant via VOLTTRON (specifically, the **Write/Control** functionality).
+This tutorial will guide you step-by-step through controlling devices in Home Assistant via VOLTTRON using the **Fan Agent** method.
 
 **Home Assistant Website**: https://www.home-assistant.io
 
-**What you'll learn**: By the end of this tutorial, you will be able to turn a Home Assistant fan on/off and adjust its speed through VOLTTRON.
+**What you'll learn**: By the end of this tutorial, you will be able to read and control Home Assistant devices (fans, lights, thermostats, and input booleans) through VOLTTRON.
 
 **Estimated time**: 45 minutes
+
+---
+
+Architecture Overview
+======================
+
+The full control chain is:
+
+::
+
+    Fan Agent → RPC → platform.driver → home_assistant.py → HA REST API → HA Device
+
+- **Fan Agent**: A VOLTTRON agent that sends RPC calls to platform.driver
+- **platform.driver**: VOLTTRON's device driver framework
+- **home_assistant.py**: The HA-specific driver interface
+- **handlers/**: Per-domain handler classes (fan, light, climate, input_boolean)
+- **HA REST API**: Home Assistant's HTTP API (port 8123)
+
+**Supported device domains and points**:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 15 45
+
+   * - Domain
+     - Entity Point
+     - Writable
+     - Description
+   * - ``fan``
+     - ``state``
+     - Yes
+     - 0 = off, 1 = on
+   * - ``fan``
+     - ``percentage``
+     - Yes
+     - Fan speed, 0–100
+   * - ``light``
+     - ``state``
+     - Yes
+     - 0 = off, 1 = on
+   * - ``light``
+     - ``brightness``
+     - Yes
+     - Brightness level, 0–255
+   * - ``climate``
+     - ``state``
+     - Yes
+     - 0=off, 2=heat, 3=cool, 4=auto
+   * - ``climate``
+     - ``temperature``
+     - Yes
+     - Target temperature in °F (45–95)
+   * - ``input_boolean``
+     - ``state``
+     - Yes
+     - 0 = off, 1 = on (toggles each call)
 
 ---
 
 Chapter 1: Install Home Assistant
 ===================================
 
-Before you begin, you need to install Home Assistant. This chapter shows how to install Home Assistant using Docker.
-
-1.1 Install Docker
--------------------
-
-First, install Docker on your machine.
-
-**For Ubuntu/Debian**:
+1.1 Install Home Assistant via pip
+------------------------------------
 
 .. code-block:: bash
 
-    $ sudo apt-get update
-    $ sudo apt-get install docker.io docker-compose
+    $ pip3 install homeassistant
 
-**For Mac/Windows**:
-
-Download Docker Desktop from https://www.docker.com/products/docker-desktop
-
-Start Docker:
+Start Home Assistant:
 
 .. code-block:: bash
 
-    $ sudo systemctl start docker
-    $ sudo systemctl enable docker
+    $ hass
 
-Verify Docker installation:
+Wait 1-2 minutes for initialization. You will see output like::
 
-.. code-block:: bash
+    Unable to find configuration. Creating default one in /home/user/.homeassistant
 
-    $ docker --version
-    # expected output: Docker version 20.x.x or higher
+.. note::
 
-1.2 Create Home Assistant Container
--------------------------------------
+    Common warnings during startup (turbojpeg, ffmpeg, aiodns) are non-critical and can be ignored.
 
-Create a folder for Home Assistant data:
-
-.. code-block:: bash
-
-    $ mkdir -p ~/homeassistant/config
-
-Create the Docker container:
-
-.. code-block:: bash
-
-    $ docker run -d \
-      --name homeassistant \
-      --restart unless-stopped \
-      -p 8123:8123 \
-      -v ~/homeassistant/config:/config \
-      --network host \
-      ghcr.io/home-assistant/home-assistant:stable
-
-**Explanation of parameters**:
-
-- ``-d``: Run in background (detached mode)
-- ``--name homeassistant``: Container name
-- ``-p 8123:8123``: Map port 8123 (Home Assistant default port)
-- ``-v ~/homeassistant/config:/config``: Map local folder to container config
-- ``--network host``: Use host network (easier for local access)
-
-1.3 Access Home Assistant
+1.2 Access Home Assistant
 --------------------------
 
-Wait about 5 minutes for Home Assistant to start, then open your browser:
+Open your browser and go to:
 
-**http://localhost:8123** (if on the same machine)
+::
 
-or
+    http://<HA_HOST_IP>:8123
 
-**http://YOUR_IP:8123** (if accessing from another machine)
+If VOLTTRON and HA are on different machines, replace ``<HA_HOST_IP>`` with the IP address of the machine running HA.
 
-Replace ``YOUR_IP`` with your machine's IP address.
-
-1.4 Create Your Account
+1.3 Create Your Account
 -------------------------
 
-When you first open Home Assistant, you'll see the setup screen:
+When you first open Home Assistant, complete the onboarding:
 
 1. Enter your **name**
 2. Create a **username** and **password**
-3. Set your **location** (for weather/time)
-4. Select your **timezone**
-5. Choose your **language**
-
-Click **Create Account** when ready.
-
-**Important**: After creating your account, you'll also need to create a Long-Lived Access Token for VOLTTRON. This will be covered in Chapter 3.
+3. Set your **location** and **timezone**
+4. Click **Create Account**
 
 ---
 
@@ -112,6 +121,15 @@ Chapter 2: Install VOLTTRON
 =============================
 
 For detailed VOLTTRON installation instructions, see :ref:`VOLTTRON Quick Start <VOLTTRON-Quick-Start>`.
+
+After installation, bootstrap and start VOLTTRON:
+
+.. code-block:: bash
+
+    $ cd ~/volttron
+    $ python3 bootstrap.py
+    $ ./start-volttron
+    $ source env/bin/activate
 
 ---
 
@@ -121,92 +139,110 @@ Chapter 3: Preparation
 3.1 Find Your Home Assistant IP Address
 -----------------------------------------
 
-**Steps**:
+.. code-block:: bash
 
-1. Open the Home Assistant web interface
-2. Click your user icon in the top-right corner
-3. Select **System**
-4. Click **Network**
-5. Find the **IPv4** address, for example ``192.168.1.100``
+    # Linux
+    $ ip addr show
 
-**Remember this address** - you will need it later.
+    # Mac
+    $ ipconfig getifaddr en0
+
+Note the IPv4 address (e.g., ``192.168.1.100``). If HA is on the same machine as VOLTTRON, use ``127.0.0.1``.
 
 3.2 Create an Access Token
 ----------------------------
 
-VOLTTRON needs a "key" to access your Home Assistant. This key is called a **Long-Lived Access Token**.
-
-**Steps**:
-
-1. In the Home Assistant interface, click your user icon in the top-right
-2. Select **Profile**
-3. Scroll down to find **Long-Lived Access Tokens**
-4. Click **Create Token**
-
-5. Give the token a name, such as ``volttron``
+1. Open the Home Assistant web interface
+2. Click your **user avatar** (bottom-left)
+3. Select **Profile**
+4. Scroll down to **Long-Lived Access Tokens**
+5. Click **Create Token**, give it a name (e.g., ``volttron``)
 6. Click **Create**
+7. **Copy the token immediately** — it will not be shown again
 
-7. **Important**: Immediately copy the displayed token string! You won't be able to see it after closing.
+.. warning::
 
-**A token looks something like this**:
+    The token is tied to the specific HA instance. If HA is restarted with a fresh database, you must generate a new token.
 
-::
+3.3 Verify the Connection
+--------------------------
 
-    eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI...
+.. code-block:: bash
 
-Save it somewhere safe.
+    $ curl -H "Authorization: Bearer YOUR_TOKEN" http://<HA_IP>:8123/api/
+
+You should receive a JSON response. A 401 error means the token is invalid.
 
 ---
 
-Chapter 4: Create a Test Device
-================================
+Chapter 4: Create Test Devices in Home Assistant
+==================================================
 
-4.1 Create a Virtual Device in Home Assistant
------------------------------------------------
+4.1 Create a Virtual Fan
+--------------------------
 
-For testing purposes, let's create a virtual fan in Home Assistant.
+.. code-block:: bash
 
-**Steps**:
+    $ nano ~/.homeassistant/configuration.yaml
 
-1. Open Home Assistant (https://www.home-assistant.io)
-2. Click **Settings** in the left menu
-3. Select **Devices & Services**
-4. Click **Helpers**
-5. Click **Create Helper** (bottom-right)
+Add the following:
 
-6. Choose the **Fan** type
+.. code-block:: yaml
 
-7. Enter the name ``test_fan``, then click **Create**
+    fan:
+      - platform: template
+        fans:
+          test_fan:
+            friendly_name: "Test Fan"
+            value_template: "{{ states('input_boolean.test_fan') }}"
+            turn_on:
+              service: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.test_fan
+            turn_off:
+              service: input_boolean.turn_off
+              target:
+                entity_id: input_boolean.test_fan
+            percentage_template: "{{ states('input_number.test_fan_speed') }}"
+            set_percentage:
+              service: input_number.set_value
+              target:
+                entity_id: input_number.test_fan_speed
+              data:
+                value: "{{ percentage }}"
 
-**Your virtual fan is ready!** It should appear in HA's entity list as ``fan.test_fan``.
+Restart HA after saving. The entity ID will be ``fan.test_fan``.
 
-4.2 Verify the Device Exists
------------------------------
+4.2 Create Other Test Devices
+-------------------------------
 
-1. In Home Assistant, press ``Ctrl + E`` on your keyboard (or click the search icon)
-2. Type ``test_fan``
-3. You should see the fan you just created
+For lights, thermostats, and input_boolean, use HA's **Helpers** UI:
+
+**Settings → Devices & Services → Helpers → Create Helper**
+
+- Choose **Toggle** to create an ``input_boolean`` entity
+- Real lights and thermostats appear automatically once integrated with HA
+
+4.3 Verify Devices Exist
+--------------------------
+
+Go to **Developer Tools → States** in HA and search for your entity (e.g., ``fan.test_fan``).
 
 ---
 
 Chapter 5: Configure VOLTTRON
 ==============================
 
-Now we need to tell VOLTTRON how to connect to Home Assistant and which device to control.
-
-**You need to create two configuration files**:
-
-1. **Device Connection Config** - tells VOLTTRON how to connect to HA
-2. **Device Point Config** - tells VOLTTRON what to control
-
 5.1 Create the Config Files
 ----------------------------
 
-Create a folder somewhere convenient (e.g., on your desktop), called ``volttron_configs``.
+Navigate to your VOLTTRON directory:
 
-**Step 1: Create the Device Connection Config**
+.. code-block:: bash
 
-Inside the folder, create a file named ``device.config``:
+    $ cd ~/volttron
+
+**Create** ``device.config``:
 
 .. code-block:: json
 
@@ -222,11 +258,7 @@ Inside the folder, create a file named ``device.config``:
         "timezone": "UTC"
     }
 
-**Important**: Replace ``YOUR_HA_IP_ADDRESS`` with your actual HA IP address and ``YOUR_ACCESS_TOKEN`` with the token you copied.
-
-**Step 2: Create the Device Point Config**
-
-In the same folder, create ``test_fan.json``:
+**Create** ``test_fan.json``:
 
 .. code-block:: json
 
@@ -240,7 +272,7 @@ In the same folder, create ``test_fan.json``:
             "Writable": true,
             "Starting Value": 0,
             "Type": "int",
-            "Notes": "Test fan"
+            "Notes": "Fan on/off state"
         },
         {
             "Entity ID": "fan.test_fan",
@@ -255,214 +287,65 @@ In the same folder, create ``test_fan.json``:
         }
     ]
 
-**Configuration Field Explanation**:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
-
-   * - Field
-     - Description
-   * - Entity ID
-     - The full device ID in HA (note: includes the ``fan.`` prefix)
-   * - Entity Point
-     - The specific attribute to control (``state`` = fan state, ``percentage`` = speed)
-   * - Volttron Point Name
-     - A name you give this control point
-   * - Writable
-     - ``true`` means it can be controlled through VOLTTRON
-   * - Type
-     - Data type (``int`` = integer)
-
 5.2 Upload Configs to VOLTTRON
-------------------------------
-
-Open your terminal and navigate to the folder containing the config files, then run these commands:
-
-**Step 1: Upload the Device Point Config**
+--------------------------------
 
 .. code-block:: bash
 
-    $ vctl config store platform.driver test_fan.json test_fan.json
+    $ vctl config store platform.driver test_fan.json test_fan.json --raw
+    $ vctl config store platform.driver devices/test/room/test_fan device.config --json
 
-**Step 2: Upload the Device Connection Config**
+.. note::
 
-.. code-block:: bash
+    ``test_fan.json`` must be stored with ``--raw`` and ``device.config`` with ``--json``.
 
-    $ vctl config store platform.driver devices/test/room/test_fan device.config
-
-**Step 3: Restart the Driver**
-
-.. code-block:: bash
-
-    $ vctl restart platform.driver
-
-**Verify Success**
-
-Check the status:
+5.3 Install and Start Platform Driver
+---------------------------------------
 
 .. code-block:: bash
+
+    $ python scripts/install-agent.py \
+        -s services/core/PlatformDriverAgent \
+        -c services/core/PlatformDriverAgent/platform-driver.agent \
+        -f
 
     $ vctl status
+    # Note the UUID of platform_driveragent-4.0
+    $ vctl start <UUID>
 
-You should see something like:
+Verify the device is being scraped (wait ~30 seconds):
 
-::
+.. code-block:: bash
 
-    listeneragent-3.3  ...  running [1234]  GOOD
-    platform.driver           ...  running [5678]  GOOD
+    $ grep -i "test_fan\|scraping" ~/volttron/volttron.log | tail -10
+
+You should see::
+
+    scraping device: test/room/test_fan
+    publishing: devices/test/room/test_fan/all
 
 ---
 
-Chapter 6: Control the Device
-==============================
+Chapter 6: Control the Fan via Fan Agent
+==========================================
 
-VOLTTRON provides three methods to control Home Assistant devices. Choose the one that fits your needs.
+.. note::
 
-6.1 Method 1: Using Control Scripts (Recommended)
--------------------------------------------------
+    Direct ``vctl rpc`` calls to ``platform.driver`` are not supported in this version of VOLTTRON.
+    RPC calls must be made from within a VOLTTRON agent.
 
-We've created convenient control scripts to set fan state and speed directly.
-
-**Important Note on Architecture**:
-
-VOLTTRON's ``platform.driver`` internally uses ``home_assistant.py`` to call the Home Assistant REST API. However, external scripts cannot directly call VOLTTRON RPC due to gevent event loop conflicts.
-
-This script calls the HA REST API directly, which is the same API that VOLTTRON uses internally.
-
-**First, create the control script** ``scripts/control_ha_device.py``:
-
-.. code-block:: python
-
-    #!/usr/bin/env python3
-    """
-    Script to control Home Assistant devices via HA REST API
-
-    Usage:
-        python scripts/control_ha_device.py ON   # Turn fan on (100%)
-        python scripts/control_ha_device.py OFF  # Turn fan off
-        python scripts/control_ha_device.py 50   # Set speed to 50%
-    """
-    import sys
-    import os
-    import requests
-    import json
-
-    # 从 device.config 读取 HA 连接信息（与 platform.driver 使用相同配置）
-    CONFIG_PATH = os.environ.get('HA_DEVICE_CONFIG', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'device.config'))
-
-    def load_config():
-        """加载 HA 连接配置"""
-        try:
-            with open(CONFIG_PATH, 'r') as f:
-                config = json.load(f)
-            return config.get('driver_config', {})
-        except Exception as e:
-            print(f"读取配置文件失败: {e}")
-            return None
-
-    def set_fan_state(state, percentage=None):
-        """Control fan state"""
-        config = load_config()
-        if not config:
-            return False
-
-        ip_address = config.get('ip_address', '127.0.0.1')
-        access_token = config.get('access_token', '')
-        port = config.get('port', '8123')
-
-        base_url = f"http://{ip_address}:{port}"
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-
-        try:
-            if percentage is not None:
-                data = {"entity_id": "fan.test_fan", "percentage": int(percentage)}
-                response = requests.post(f"{base_url}/api/services/fan/set_percentage", headers=headers, json=data)
-            elif state.upper() == "ON":
-                data = {"entity_id": "fan.test_fan", "percentage": 100}
-                response = requests.post(f"{base_url}/api/services/fan/turn_on", headers=headers, json=data)
-            elif state.upper() == "OFF":
-                data = {"entity_id": "fan.test_fan"}
-                response = requests.post(f"{base_url}/api/services/fan/turn_off", headers=headers, json=data)
-            else:
-                return False
-
-            if response.status_code == 200:
-                print(f"Success!")
-                return True
-            return False
-        except Exception as e:
-            print(f"Error: {e}")
-            return False
-
-    def main():
-        if len(sys.argv) < 2:
-            print("Usage: control_ha_device.py <ON|OFF|0-100>")
-            sys.exit(1)
-
-        arg = sys.argv[1]
-        if arg.isdigit():
-            success = set_fan_state(None, percentage=int(arg))
-        else:
-            success = set_fan_state(arg)
-
-        sys.exit(0 if success else 1)
-
-    if __name__ == '__main__':
-        main()
-
-**Turn ON the fan**:
-
-.. code-block:: bash
-
-    $ cd volttron
-    $ source env/bin/activate
-    $ python scripts/control_ha_device.py ON
-
-**Turn OFF the fan**:
-
-.. code-block:: bash
-
-    $ python scripts/control_ha_device.py OFF
-
-**Set fan speed percentage** (0-100):
-
-.. code-block:: bash
-
-    $ python scripts/control_ha_device.py 50   # Set to 50%
-
-**Note**: Method 1 directly calls the Home Assistant REST API, bypassing VOLTTRON RPC to avoid gevent compatibility issues.
-
-6.2 Method 2: Using Fan Agent
---------------------------------
-
-The Fan Agent is an automation agent that automatically sets fan state and speed on startup by calling platform.driver RPC.
-
-**Step 1: Install Fan Agent**
-
-Ensure Actuator Agent is installed and running:
+6.1 Install Actuator Agent
+----------------------------
 
 .. code-block:: bash
 
     $ vctl install services/core/ActuatorAgent --tag actuator
     $ vctl start --tag actuator
 
-**Important: The Fan Agent's device path must include the "devices/" prefix!**
+6.2 Create Fan Agent Config
+-----------------------------
 
-In the agent code, the device path is defined as:
-
-.. code-block:: python
-
-    TOPIC = "devices/test/room/test_fan"  # Note: must include "devices/" prefix!
-
-If you see errors like ``KeyError: 'test/room/test_fan'``, check that the path includes the "devices/" prefix.
-
-**Step 2: Create Fan Agent Config**
-
-Create config file ``fan_agent/config.json``:
+Create ``fan_agent/config.json``:
 
 .. code-block:: json
 
@@ -471,16 +354,7 @@ Create config file ``fan_agent/config.json``:
         "action_type": "state"
     }
 
-Or set percentage speed:
-
-.. code-block:: json
-
-    {
-        "action": 80,
-        "action_type": "percentage"
-    }
-
-**Config Explanation**:
+**Config field explanation**:
 
 .. list-table::
    :header-rows: 1
@@ -489,344 +363,63 @@ Or set percentage speed:
    * - Field
      - Description
    * - action
-     - Action value (state mode: 0=off, 1=on; percentage mode: 0-100)
+     - The value to set. For ``state``: 0=off, 1=on. For ``percentage``: 0–100.
    * - action_type
-     - Action type (``state`` or ``percentage``)
+     - Either ``state`` (on/off) or ``percentage`` (speed control)
 
-**Step 3: Install and Start Fan Agent**
-
-The Fan Agent uses platform.driver RPC to control devices, which requires the device path to include the "devices/" prefix.
-
-.. code-block:: bash
-
-    $ cd fan_agent
-    $ python setup.py bdist_wheel
-
-    # If vctl install fails with permission errors, try:
-    $ cd ..
-    $ source env/bin/activate
-    $ vctl install fan_agent/dist/fan_agent-1.0-py3-none-any.whl --tag fan_agent
-
-    # Or use the install script:
-    $ python scripts/install-agent.py -s fan_agent -t fan_agent --start
-
-    $ vctl start --tag fan_agent
-
-The Fan Agent will automatically set the fan to the configured state on startup.
-
-**Step 4: Change Fan Settings**
-
-To change fan settings, simply modify the config file and restart the Agent:
+6.3 Install and Start Fan Agent
+---------------------------------
 
 .. code-block:: bash
 
-    # Edit config
-    $ vctl config edit fan_agent config.json
-    # Restart Agent
-    $ vctl restart --tag fan_agent
+    $ python scripts/install-agent.py \
+        -s fan_agent \
+        -c fan_agent/config.json \
+        -t fan_agent \
+        --start \
+        -f
 
-6.3 Method 3: Direct RPC Calls (Requires Special Setup)
----------------------------------------------------
+    $ vctl status
+    # fan_agent-1.0 should show: running [XXXX]  GOOD
 
-Direct RPC calls to platform.driver have gevent compatibility issues in external scripts. However, RPC **does work** when called from within a VOLTTRON agent.
+The Fan Agent controls the fan ~10 seconds after startup.
 
-**Why RPC doesn't work in external scripts**: The ControlConnection and Agent classes use gevent for async operations. When run outside the VOLTTRON environment, gevent conflicts with the standard event loop, causing hangs on RPC calls.
+6.4 Change Fan Settings
+------------------------
 
-**If you need RPC, use one of these approaches**:
+.. code-block:: bash
 
-1. **Call from within an agent** (e.g., the Fan Agent in Method 2)
-2. **Modify the Fan Agent's config and restart** to trigger RPC calls
-3. **Use the HA REST API directly** (Method 1)
+    # Turn fan off
+    $ echo '{"action": 0, "action_type": "state"}' > fan_agent/config.json
+    $ python scripts/install-agent.py -s fan_agent -c fan_agent/config.json -t fan_agent --start -f
 
-For this tutorial, Method 1 is recommended as it's the most straightforward and reliable.
+    # Set speed to 50%
+    $ echo '{"action": 50, "action_type": "percentage"}' > fan_agent/config.json
+    $ python scripts/install-agent.py -s fan_agent -c fan_agent/config.json -t fan_agent --start -f
 
-**Verify the Result**
+6.5 Verify the Result
+----------------------
 
-Go back to the Home Assistant web interface and find ``test_fan``. You should see its state has changed!
+Open Home Assistant in your browser and check the state of ``fan.test_fan``.
+
+.. code-block:: bash
+
+    $ grep -i "test_fan\|fan_agent" ~/volttron/volttron.log | tail -20
+
+.. warning::
+
+    The ``TOPIC`` in ``set_point`` RPC calls must **not** include the ``devices/`` prefix.
+    Use ``"test/room/test_fan"``, not ``"devices/test/room/test_fan"``.
 
 ---
 
 Chapter 7: Other Supported Device Types
-=========================================
+==========================================
 
-In addition to the fan demonstrated above, the Home Assistant Driver supports the following device types:
+7.1 Light
+----------
 
-7.1 Lights
------------
-
-Can control state and brightness.
-
-**Config Example**:
-
-.. code-block:: json
-
-    [
-        {
-            "Entity ID": "light.living_room",
-            "Entity Point": "state",
-            "Volttron Point Name": "light_state",
-            "Units": "On / Off",
-            "Units Details": "0: off, 1: on",
-            "Writable": true,
-            "Starting Value": 0,
-            "Type": "int"
-        },
-        {
-            "Entity ID": "light.living_room",
-            "Entity Point": "brightness",
-            "Volttron Point Name": "light_brightness",
-            "Units": "Percent",
-            "Units Details": "0 - 255",
-            "Writable": true,
-            "Starting Value": 0,
-            "Type": "int"
-        }
-    ]
-
-**State Mapping**:
-
-.. list-table::
-   :header-rows: 1
-
-   * - HA State
-     - VOLTTRON Value
-   * - off
-     - 0
-   * - on
-     - 1
-
-**Brightness**: HA uses 0-255 range, VOLTTRON uses the same range directly.
-
-7.2 Thermostats (Climate)
--------------------------
-
-Can control mode and target temperature.
-
-**Config Example**:
-
-.. code-block:: json
-
-    [
-        {
-            "Entity ID": "climate.my_thermostat",
-            "Entity Point": "state",
-            "Volttron Point Name": "thermostat_state",
-            "Units": "Enumeration",
-            "Units Details": "0: Off, 2: heat, 3: Cool, 4: Auto",
-            "Writable": true,
-            "Starting Value": 0,
-            "Type": "int"
-        },
-        {
-            "Entity ID": "climate.my_thermostat",
-            "Entity Point": "temperature",
-            "Volttron Point Name": "set_temperature",
-            "Units": "F",
-            "Writable": true,
-            "Starting Value": 72,
-            "Type": "float"
-        }
-    ]
-
-**Mode Mapping**:
-
-.. list-table::
-   :header-rows: 1
-
-   * - HA Mode
-     - VOLTTRON Value
-   * - off
-     - 0
-   * - heat
-     - 2
-   * - cool
-     - 3
-   * - auto
-     - 4
-
-7.3 Fans (with Percentage Control)
----------
-
-Can control state and speed percentage.
-
-**Config Example**:
-
-.. code-block:: json
-
-    [
-        {
-            "Entity ID": "fan.living_room",
-            "Entity Point": "state",
-            "Volttron Point Name": "fan_state",
-            "Units": "On / Off",
-            "Units Details": "0: off, 1: on",
-            "Writable": true,
-            "Starting Value": 0,
-            "Type": "int"
-        },
-        {
-            "Entity ID": "fan.living_room",
-            "Entity Point": "percentage",
-            "Volttron Point Name": "fan_percentage",
-            "Units": "Percent",
-            "Units Details": "Fan speed percentage, 0 - 100",
-            "Writable": true,
-            "Starting Value": 0,
-            "Type": "int"
-        }
-    ]
-
----
-
-Chapter 8: Troubleshooting
-==========================
-
-8.1 Connection Failed
-----------------------
-
-**Problem**: VOLTTRON cannot connect to Home Assistant
-
-**Solutions**:
-
-1. Check if the IP address is correct
-2. Check if the port is 8123 (default)
-3. Check if the token is correct (try generating a new one)
-4. Make sure both are on the same network
-
-8.2 Device Not Found
---------------------
-
-**Problem**: Error message "Entity not found"
-
-**Solutions**:
-
-1. Verify the device ID in Home Assistant
-2. Check if Entity ID includes the correct prefix (e.g., ``light.``, ``climate.``)
-3. Use HA's developer tools to check the entity list
-
-**How to view entity list**:
-
-1. In Home Assistant, press ``Ctrl + Shift + D`` to open developer tools
-2. Click **States**
-3. Search for your device
-
-8.3 Command Has No Effect
----------------------------
-
-**Problem**: Device doesn't respond after sending command
-
-**Solutions**:
-
-1. Check if ``Writable`` field is set to ``true``
-2. Check if the data format is correct
-3. Check if HA device state is "available" (not "unavailable")
-4. Check logs for more information
-
-8.4 Viewing Logs
------------------
-
-View VOLTTRON logs:
-
-.. code-block:: bash
-
-    $ tail -f volttron.log
-
-View only Home Assistant related logs:
-
-.. code-block:: bash
-
-    $ grep -i "home" volttron.log
-
----
-
-Chapter 9: Summary
-==================
-
-Congratulations on completing the Home Assistant Write Tutorial!
-
-**What you've learned**:
-
-- How to install Home Assistant using Docker
-- How to install VOLTTRON
-- How to get Home Assistant connection information
-- How to create VOLTTRON configuration files
-- How to control HA devices through VOLTTRON
-- Supported device types
-
-**Next Steps**:
-
-- Try controlling a real device (like a real fan)
-- Try more complex devices (like thermostats)
-- Learn how to control multiple devices at once
-
----
-
-Appendix: Complete Config Templates
-===================================
-
-A.1 Fan Config
-----------------
-
-**device.config**:
-
-.. code-block:: json
-
-    {
-        "driver_config": {
-            "ip_address": "YOUR_HA_IP",
-            "access_token": "YOUR_TOKEN",
-            "port": "8123"
-        },
-        "driver_type": "home_assistant",
-        "registry_config": "config://my_fan.json",
-        "interval": 30
-    }
-
-**my_fan.json**:
-
-.. code-block:: json
-
-    [
-        {
-            "Entity ID": "fan.my_fan",
-            "Entity Point": "state",
-            "Volttron Point Name": "fan_state",
-            "Units": "On / Off",
-            "Writable": true,
-            "Starting Value": 0,
-            "Type": "int"
-        },
-        {
-            "Entity ID": "fan.my_fan",
-            "Entity Point": "percentage",
-            "Volttron Point Name": "fan_percentage",
-            "Units": "Percent",
-            "Units Details": "0 - 100",
-            "Writable": true,
-            "Starting Value": 0,
-            "Type": "int"
-        }
-    ]
-
-A.2 Light Config
----------------------
-
-**device.config**:
-
-.. code-block:: json
-
-    {
-        "driver_config": {
-            "ip_address": "YOUR_HA_IP",
-            "access_token": "YOUR_TOKEN",
-            "port": "8123"
-        },
-        "driver_type": "home_assistant",
-        "registry_config": "config://my_light.json",
-        "interval": 30
-    }
-
-**my_light.json**:
+**Registry config** (``my_light.json``):
 
 .. code-block:: json
 
@@ -836,31 +429,46 @@ A.2 Light Config
             "Entity Point": "state",
             "Volttron Point Name": "light_state",
             "Units": "On / Off",
+            "Units Details": "0: off, 1: on",
+            "Writable": true,
+            "Starting Value": 0,
+            "Type": "int"
+        },
+        {
+            "Entity ID": "light.my_light",
+            "Entity Point": "brightness",
+            "Volttron Point Name": "light_brightness",
+            "Units": "0-255",
+            "Units Details": "0: off, 255: full brightness",
             "Writable": true,
             "Starting Value": 0,
             "Type": "int"
         }
     ]
 
-A.3 Thermostat Config
----------------------
+**Upload and control**:
 
-**device.config**:
+.. code-block:: bash
 
-.. code-block:: json
+    $ vctl config store platform.driver my_light.json my_light.json --raw
+    $ vctl config store platform.driver devices/test/room/my_light device.config --json
 
-    {
-        "driver_config": {
-            "ip_address": "YOUR_HA_IP",
-            "access_token": "YOUR_TOKEN",
-            "port": "8123"
-        },
-        "driver_type": "home_assistant",
-        "registry_config": "config://thermostat.json",
-        "interval": 30
-    }
+    # Turn light on
+    $ echo '{"action": 1, "action_type": "state"}' > fan_agent/config.json
+    $ python scripts/install-agent.py -s fan_agent -c fan_agent/config.json -t fan_agent --start -f
 
-**thermostat.json**:
+    # Turn light off
+    $ echo '{"action": 0, "action_type": "state"}' > fan_agent/config.json
+    $ python scripts/install-agent.py -s fan_agent -c fan_agent/config.json -t fan_agent --start -f
+
+    # Set brightness to 128
+    $ echo '{"action": 128, "action_type": "brightness"}' > fan_agent/config.json
+    $ python scripts/install-agent.py -s fan_agent -c fan_agent/config.json -t fan_agent --start -f
+
+7.2 Thermostat (Climate)
+-------------------------
+
+**Registry config** (``my_thermostat.json``):
 
 .. code-block:: json
 
@@ -868,9 +476,9 @@ A.3 Thermostat Config
         {
             "Entity ID": "climate.my_thermostat",
             "Entity Point": "state",
-            "Volttron Point Name": "mode",
+            "Volttron Point Name": "thermostat_state",
             "Units": "Enumeration",
-            "Units Details": "0: Off, 2: heat, 3: Cool, 4: Auto",
+            "Units Details": "0: off, 2: heat, 3: cool, 4: auto",
             "Writable": true,
             "Starting Value": 0,
             "Type": "int"
@@ -878,10 +486,197 @@ A.3 Thermostat Config
         {
             "Entity ID": "climate.my_thermostat",
             "Entity Point": "temperature",
-            "Volttron Point Name": "set_temp",
+            "Volttron Point Name": "set_temperature",
             "Units": "F",
+            "Units Details": "45 - 95",
             "Writable": true,
             "Starting Value": 72,
             "Type": "float"
         }
     ]
+
+**Mode mapping**:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - VOLTTRON Value
+     - HA HVAC Mode
+   * - 0
+     - off
+   * - 2
+     - heat
+   * - 3
+     - cool
+   * - 4
+     - auto
+
+**Upload and control**:
+
+.. code-block:: bash
+
+    $ vctl config store platform.driver my_thermostat.json my_thermostat.json --raw
+    $ vctl config store platform.driver devices/test/room/my_thermostat device.config --json
+
+    # Set to heat mode
+    $ echo '{"action": 2, "action_type": "state"}' > fan_agent/config.json
+    $ python scripts/install-agent.py -s fan_agent -c fan_agent/config.json -t fan_agent --start -f
+
+    # Set to cool mode
+    $ echo '{"action": 3, "action_type": "state"}' > fan_agent/config.json
+    $ python scripts/install-agent.py -s fan_agent -c fan_agent/config.json -t fan_agent --start -f
+
+    # Set temperature to 75°F
+    $ echo '{"action": 75, "action_type": "temperature"}' > fan_agent/config.json
+    $ python scripts/install-agent.py -s fan_agent -c fan_agent/config.json -t fan_agent --start -f
+
+7.3 Input Boolean
+------------------
+
+``input_boolean`` is a simple toggle switch. Each ``set_point`` call toggles its state
+regardless of the value passed.
+
+**Registry config** (``my_boolean.json``):
+
+.. code-block:: json
+
+    [
+        {
+            "Entity ID": "input_boolean.my_switch",
+            "Entity Point": "state",
+            "Volttron Point Name": "boolean_state",
+            "Units": "On / Off",
+            "Units Details": "0: off, 1: on",
+            "Writable": true,
+            "Starting Value": 0,
+            "Type": "int"
+        }
+    ]
+
+**Upload and control**:
+
+.. code-block:: bash
+
+    $ vctl config store platform.driver my_boolean.json my_boolean.json --raw
+    $ vctl config store platform.driver devices/test/room/my_boolean device.config --json
+
+    # Toggle the switch
+    $ echo '{"action": 1, "action_type": "state"}' > fan_agent/config.json
+    $ python scripts/install-agent.py -s fan_agent -c fan_agent/config.json -t fan_agent --start -f
+
+.. note::
+
+    Each call toggles the boolean. Call it twice to return to the original state.
+
+---
+
+Chapter 8: Troubleshooting
+============================
+
+8.1 401 Unauthorized
+---------------------
+
+Generate a new token in HA (**Profile → Long-Lived Access Tokens → Create Token**), then update:
+
+.. code-block:: bash
+
+    $ sed -i 's/"access_token": ".*"/"access_token": "NEW_TOKEN"/' device.config
+    $ vctl config store platform.driver devices/test/room/test_fan device.config --json
+    $ vctl restart <platform_driver_UUID>
+
+8.2 Connection Refused
+-----------------------
+
+Check HA is running and the IP/port in ``device.config`` are correct:
+
+.. code-block:: bash
+
+    $ ps aux | grep hass
+    $ curl http://<HA_IP>:8123/api/
+
+8.3 KeyError on set_point
+--------------------------
+
+In the Fan Agent code, change ``TOPIC`` to remove the ``devices/`` prefix:
+
+.. code-block:: python
+
+    TOPIC = "test/room/test_fan"   # correct
+
+8.4 AttributeError: 'str' object has no attribute 'get'
+---------------------------------------------------------
+
+In ``home_assistant.py``, add JSON parsing at the start of ``parse_config``:
+
+.. code-block:: python
+
+    def parse_config(self, config_dict):
+        if not config_dict:
+            return
+        if isinstance(config_dict, str):
+            config_dict = json.loads(config_dict)
+
+In ``driver.py``, add ``config://`` resolution before the interface is called:
+
+.. code-block:: python
+
+    registry_config = config.get("registry_config")
+    if isinstance(registry_config, str) and registry_config.startswith("config://"):
+        config_name = registry_config[len("config://"):]
+        registry_config = self.vip.config.get(config_name)
+
+Then reinstall the Platform Driver:
+
+.. code-block:: bash
+
+    $ python scripts/install-agent.py \
+        -s services/core/PlatformDriverAgent \
+        -c services/core/PlatformDriverAgent/platform-driver.agent \
+        -f
+
+8.5 Fan Agent Not Starting (status shows ``1``)
+------------------------------------------------
+
+Check for import errors and fix:
+
+.. code-block:: bash
+
+    $ grep "fan_agent" ~/volttron/volttron.log | grep ERROR
+
+    $ sed -i 's/from volttron.platform.vip.agent import Agent, Core, rpc_method/from volttron.platform.vip.agent import Agent, Core\nfrom volttron.platform.vip.agent import RPC/' fan_agent/fan_agent/agent.py
+    $ sed -i 's/@rpc_method/@RPC.export/' fan_agent/fan_agent/agent.py
+
+    $ python scripts/install-agent.py -s fan_agent -c fan_agent/config.json -t fan_agent --start -f
+
+8.6 Viewing Logs
+-----------------
+
+.. code-block:: bash
+
+    $ tail -f ~/volttron/volttron.log
+    $ grep -i "test_fan\|home_assistant\|fan_agent" ~/volttron/volttron.log | tail -20
+    $ grep "ERROR" ~/volttron/volttron.log | tail -20
+
+---
+
+Chapter 9: Summary
+====================
+
+**The complete control chain**:
+
+::
+
+    Fan Agent
+        ↓  self.vip.rpc.call("platform.driver", "set_point", ...)
+    platform.driver
+        ↓  home_assistant.py → handlers/fan.py (or light.py, climate.py, input_boolean.py)
+    HA REST API (http://IP:8123/api/services/...)
+        ↓
+    Home Assistant entity
+
+**Next Steps**:
+
+- Extend the Fan Agent to respond to sensor data automatically
+- Use the SQL Historian to log device state over time
+- Try controlling multiple devices from a single agent
